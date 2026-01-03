@@ -11,7 +11,6 @@ from sklearn.metrics import silhouette_score
 
 from sentence_transformers import SentenceTransformer
 
-# ✅ st.set_page_config DOIT être la première commande Streamlit
 st.set_page_config(page_title="Google Ads - Search Termes Analyse", layout="wide")
 
 class StreamlitGADS():
@@ -20,6 +19,7 @@ class StreamlitGADS():
         self.MAIN_DIR = Path(__file__).parent.resolve()
         self.PATH_DIR = f"{self.MAIN_DIR}/import_dir"
         self.EXCEL_LIST = None
+        self.dashboard = ""
     
     def _create_dir(self):
         os.makedirs(self.PATH_DIR, exist_ok=True)
@@ -71,6 +71,38 @@ class StreamlitGADS():
                 placeholder="No files", 
                 index=None
             )
+    
+    def _rename_cols(self, df) -> pd.DataFrame:
+        with st.expander("Remap Col Name"):
+            flex = st.container(
+                horizontal=True,
+                horizontal_alignment="left",
+                gap="small"
+            )
+
+            impr = flex.text_input("Impression")
+            clics = flex.text_input("Clics")
+            ctr = flex.text_input("CTR")
+            cpc = flex.text_input("CPC moy.")
+            cost = flex.text_input("Coût")
+            conv_targ = flex.text_input("Taux conv target")
+
+            mapping = {
+                impr: "Impr.",
+                clics: "Clics",
+                ctr: "CTR",
+                cpc: "CPC moy.",
+                cost: "Coût",
+                conv_targ: "taux conv target"
+            }
+
+            col_rename = {k: v for k, v in mapping.items() if k}
+
+            if col_rename:
+                df = df.rename(columns=col_rename)
+
+        return df
+
 
     def _apply_iqr_filter(self, df, columns):
         """
@@ -139,7 +171,11 @@ class StreamlitGADS():
         #st.markdown(st.session_state)
         data = self._load_data(st.session_state.get("excel_choosed"))
 
+        st.header("Choose if Meta Dashboard or GADS")
+        self.dashboard = st.selectbox("Choose the model", options=["Meta", "GADS"])
+        
         if data is not None and not data.empty:
+            self._rename_cols(data)
             with st.sidebar:
                 st.header("Choose the campaigns / adsets")
 
