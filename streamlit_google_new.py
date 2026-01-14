@@ -11,7 +11,11 @@ from sklearn.metrics import silhouette_score
 
 from sentence_transformers import SentenceTransformer
 
-st.set_page_config(page_title="Google Ads - Search Termes Analyse", layout="wide")
+st.set_page_config(
+    page_title="Google Ads & Meta Ads - Analyse des Termes de Recherche",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 class StreamlitGADS():
 
@@ -26,68 +30,114 @@ class StreamlitGADS():
 
     def _find_excel(self):
         self._create_dir()
-        if os.listdir(self.PATH_DIR) != None:
-            self.EXCEL_LIST = [x for x in os.listdir(self.PATH_DIR) if x.endswith(".xlsx")]
+        files = os.listdir(self.PATH_DIR)
+        if files:
+            self.EXCEL_LIST = [x for x in files if x.endswith(".xlsx")]
         else:
-            st.markdown(f"Add the data in the Excel Dir: {self.PATH_DIR}")
+            st.warning(f"Add the data in the Excel Dir: {self.PATH_DIR}")
 
     @st.cache_data(show_spinner=False)
-    def _load_data(_self, excel_name, start_index=2) -> pd.DataFrame:
+    def _load_data(_self, excel_name, start_index=2) -> pd.DataFrame | None:
         if excel_name is None:
             return None
 
-        with st.spinner("Load data.."):
-            data = pd.read_excel(
-                os.path.join(str(_self.PATH_DIR), excel_name),
-                header=start_index
-            )
-
-            if "purchase_True" in data.columns:
-                data["purchase_True"] = (
-                    data["purchase_True"]
-                    .astype(str)
-                    .str.replace(",", ".", regex=False)
-                    .astype(float)
+        try:
+            with st.spinner("Load data.."):
+                data = pd.read_excel(
+                    os.path.join(str(_self.PATH_DIR), excel_name),
+                    header=start_index
                 )
 
-            data = data.astype({
-                "Clics": int,
-                "Impr.": int,
-                "CTR": float,
-                "CPC moy.": float,
-                "Coût": float,
-                "Toutes les conversions": float,
-            })
+                if "purchase_True" in data.columns:
+                    data["purchase_True"] = (
+                        data["purchase_True"]
+                        .astype(str)
+                        .str.replace(",", ".", regex=False)
+                        .astype(float)
+                    )
 
-            return data
+                # Conversion de type sécurisée
+                type_mapping = {
+                    "Clics": int,
+                    "Impr.": int,
+                    "CTR": float,
+                    "CPC moy.": float,
+                    "Coût": float,
+                    "Toutes les conversions": float,
+                }
+
+                for col, dtype in type_mapping.items():
+                    if col in data.columns:
+                        data[col] = pd.to_numeric(data[col], errors='coerce').astype(dtype)
+
+                return data
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
+            return None
 
     def _dashboard_setup(self):
         self._find_excel()
         with st.sidebar:
             self.EXCEL = st.selectbox(
-                "Choose excel file", 
-                self.EXCEL_LIST, 
-                key="excel_choosed", 
-                placeholder="No files", 
+                "Choose excel file",
+                self.EXCEL_LIST,
+                key="excel_choosed",
+                placeholder="No files",
                 index=None
+            )
+
+            # Sélection de l'index de ligne pour le header
+            st.session_state["header_index"] = st.number_input(
+                "Ligne de début (header)",
+                min_value=0,
+                max_value=20,
+                value=2,
+                step=1,
+                key="header_row_input",
+                help="Ligne où commence les données (0 = première ligne)"
             )
     
     def _rename_cols(self, df) -> pd.DataFrame:
         with st.expander("Remap Col Name"):
-            flex = st.container(
+            st.caption("Mapper les colonnes de votre fichier aux noms standards")
+
+            # Section 1: Colonnes de campagne/adset
+            st.markdown("**Colonnes de structure**")
+            flex1 = st.container(
+                horizontal=True,
+                horizontal_alignment="left",
+                gap="small"
+            )
+            campaign = flex1.text_input("Campaign", placeholder="Campaign name")
+            adset = flex1.text_input("Adset", placeholder="Ad set / Ad group")
+
+            st.divider()
+
+            # Section 2: Colonnes de métriques
+            st.markdown("**Colonnes de métriques**")
+            flex2 = st.container(
                 horizontal=True,
                 horizontal_alignment="left",
                 gap="small"
             )
 
-            impr = flex.text_input("Impression")
-            clics = flex.text_input("Clics")
-            ctr = flex.text_input("CTR")
-            cpc = flex.text_input("CPC moy.")
-            cost = flex.text_input("Coût")
-            conv_targ = flex.text_input("Taux conv target")
+            impr = flex2.text_input("Impression", placeholder="Impressions")
+            clics = flex2.text_input("Clics", placeholder="Clicks")
+            ctr = flex2.text_input("CTR", placeholder="CTR")
+
+            flex3 = st.container(
+                horizontal=True,
+                horizontal_alignment="left",
+                gap="small"
+            )
+
+            cpc = flex3.text_input("CPC moy.", placeholder="Avg CPC")
+            cost = flex3.text_input("Coût", placeholder="Cost/Spend")
+            conv_targ = flex3.text_input("Taux conv target", placeholder="Conv. rate")
 
             mapping = {
+                campaign: "campaign",
+                adset: "adset",
                 impr: "Impr.",
                 clics: "Clics",
                 ctr: "CTR",
@@ -100,6 +150,7 @@ class StreamlitGADS():
 
             if col_rename:
                 df = df.rename(columns=col_rename)
+                st.success(f"✅ {len(col_rename)} colonnes renommées")
 
         return df
 
@@ -143,14 +194,18 @@ class StreamlitGADS():
             
             # Si pas de variabilité, on passe
             if iqr == 0:
-                st.info(f"ℹ️ {col}: IQR = 0, pas de filtrage")
+                st.info(f"ℹ️ {col}: Pas de variabilité (IQR = 0), pas de filtrage")
                 continue
-            
+
             # Calculer les limites
             lower_bound = q1 - 1.5 * iqr
             upper_bound = q3 + 1.5 * iqr
-            
-            st.write(f"**{col}**: Limites [{lower_bound:.2f}, {upper_bound:.2f}]")
+
+            # Compter les valeurs hors limites
+            outliers = ((series < lower_bound) | (series > upper_bound)) & series.notna()
+            n_outliers = outliers.sum()
+
+            st.write(f"**{col}**: [{lower_bound:.2f}, {upper_bound:.2f}] - {n_outliers} valeurs aberrantes détectées")
             
             # Filtrer : garder les valeurs dans les limites OU les NaN
             mask = ((series >= lower_bound) & (series <= upper_bound)) | series.isna()
@@ -160,55 +215,141 @@ class StreamlitGADS():
         nb_removed = nb_initial - nb_final
         
         if nb_removed > 0:
-            st.success(f"✅ Filtre IQR: {nb_removed} lignes supprimées")
+            pct_removed = (nb_removed / nb_initial) * 100
+            st.success(f"✅ Filtre IQR: {nb_removed} lignes supprimées ({pct_removed:.1f}%)")
         else:
             st.info("ℹ️ Filtre IQR: Aucune valeur aberrante détectée")
         
         return df_clean
 
+    def _create_slider(self, col, data_filtered, label, is_percentage=False, is_integer=False):
+        """
+        Crée un slider pour filtrer les données sur une colonne spécifique
+
+        Parameters:
+        -----------
+        col : str
+            Nom de la colonne
+        data_filtered : DataFrame
+            Données à filtrer
+        label : str
+            Label du slider
+        is_percentage : bool
+            Si True, retire le symbole % avant conversion
+        is_integer : bool
+            Si True, convertit en int, sinon en float
+
+        Returns:
+        --------
+        Series : Masque booléen pour filtrer les données
+        """
+        if col not in data_filtered.columns:
+            return pd.Series(True, index=data_filtered.index)
+
+        series = data_filtered[col].astype(str)
+
+        if is_percentage:
+            series = series.str.replace("%", "", regex=False)
+
+        series = series.str.replace(",", ".", regex=False)
+        series = pd.to_numeric(series, errors="coerce")
+
+        if series.dropna().empty:
+            st.info(f"Aucune donnée valide pour {label}")
+            return pd.Series(True, index=data_filtered.index)
+
+        if is_integer:
+            min_v, max_v = int(series.min()), int(series.max())
+            step = 1
+        else:
+            min_v, max_v = float(series.min()), float(series.max())
+            step = None
+
+        min_s, max_s = st.slider(
+            label,
+            min_value=min_v,
+            max_value=max_v,
+            value=(min_v, max_v),
+            step=step
+        )
+
+        return (series >= min_s) & (series <= max_s)
+
     def main_dash(self, col_campaign="campaign", col_adset="adset"):
         self._dashboard_setup()
-        #st.markdown(st.session_state)
-        data = self._load_data(st.session_state.get("excel_choosed"))
 
-        st.header("Choose if Meta Dashboard or GADS")
-        self.dashboard = st.selectbox("Choose the model", options=["Meta", "GADS"])
-        
+        # Récupérer l'index du header
+        header_idx = st.session_state.get("header_index", 2)
+        data = self._load_data(st.session_state.get("excel_choosed"), start_index=header_idx)
+
+        st.title("📊 Dashboard Google Ads & Meta Ads")
+        st.caption("Analyse des performances et clustering des termes de recherche")
+
+        self.dashboard = st.selectbox(
+            "Plateforme publicitaire",
+            options=["Meta", "GADS"],
+            help="Sélectionnez la plateforme pour adapter l'analyse"
+        )
+
         if data is not None and not data.empty:
-            self._rename_cols(data)
+            # IMPORTANT: récupérer le DataFrame renommé
+            data = self._rename_cols(data)
             with st.sidebar:
-                st.header("Choose the campaigns / adsets")
+                st.header("📋 Filtres de campagne")
 
                 selected_campaign = None
                 selected_adset = None
 
+                # Filtre Campagne
                 if col_campaign in data.columns:
-                    selected_campaign = st.selectbox(
-                        "Choose the campaign",
-                        data[col_campaign].dropna().unique(),
-                        key="selected_campaign"
-                    )
-                else:
-                    st.warning("Your excel doesn't have campaign column")
+                    campaigns = data[col_campaign].dropna().unique().tolist()
+                    campaigns.sort()
 
-                if col_adset in data.columns:
-                    selected_adset = st.selectbox(
-                        "Choose the adset",
-                        data[col_adset].dropna().unique(),
-                        key="selected_adset"
+                    selected_campaign = st.selectbox(
+                        "Campagne",
+                        options=[None] + campaigns,
+                        format_func=lambda x: "Toutes les campagnes" if x is None else x,
+                        key="selected_campaign",
+                        help=f"{len(campaigns)} campagnes disponibles"
                     )
                 else:
-                    st.warning("Your excel doesn't have adset column")
+                    st.warning("⚠️ Colonne 'campaign' non trouvée dans vos données")
+
+                # Filtre Adset (dépend de la campagne sélectionnée)
+                if col_adset in data.columns:
+                    # Filtrer les adsets en fonction de la campagne sélectionnée
+                    if selected_campaign and col_campaign in data.columns:
+                        adsets = data[data[col_campaign] == selected_campaign][col_adset].dropna().unique().tolist()
+                    else:
+                        adsets = data[col_adset].dropna().unique().tolist()
+
+                    adsets.sort()
+
+                    selected_adset = st.selectbox(
+                        "Adset / Groupe d'annonces",
+                        options=[None] + adsets,
+                        format_func=lambda x: "Tous les adsets" if x is None else x,
+                        key="selected_adset",
+                        help=f"{len(adsets)} adsets disponibles"
+                    )
+                else:
+                    st.warning("⚠️ Colonne 'adset' non trouvée dans vos données")
 
                 col_convs = st.text_input(
-                    "Choose the conversions column",
-                    key="conv_target"
+                    "Colonne des conversions cible",
+                    key="conv_target",
+                    placeholder="Ex: purchase, lead, signup..."
                 )
 
                 # --- FILTRE IQR ---
                 st.divider()
-                st.header("Filtre IQR")
-                apply_iqr = st.checkbox("Appliquer le filtre IQR", value=False, key="apply_iqr_filter")
+                st.header("🔍 Filtre IQR")
+                apply_iqr = st.checkbox(
+                    "Appliquer le filtre IQR (valeurs aberrantes)",
+                    value=False,
+                    key="apply_iqr_filter",
+                    help="Supprime les valeurs aberrantes selon la méthode IQR (Interquartile Range)"
+                )
 
             # --- Build mask ---
             mask = pd.Series(True, index=data.index)
@@ -224,10 +365,14 @@ class StreamlitGADS():
             # Conversions filter
             if col_convs:
                 if col_convs not in data.columns:
-                    st.warning("Conversions column not found")
+                    st.warning(f"⚠️ Colonne '{col_convs}' non trouvée")
                 else:
                     mask &= data[col_convs] > 0
-                    data["taux conv target"] = data[col_convs] * 100 / data["Clics"]
+                    # Éviter division par zéro
+                    data["taux conv target"] = data.apply(
+                        lambda row: (row[col_convs] * 100 / row["Clics"]) if row["Clics"] > 0 else 0,
+                        axis=1
+                    )
 
             # Appliquer le masque campaign/adset/conversions
             data_filtered = data.loc[mask].copy()
@@ -238,152 +383,110 @@ class StreamlitGADS():
                     data_filtered = self._apply_iqr_filter(data_filtered, ["Impr.", "Clics"])
 
             # --- Maintenant les sliders utilisent data_filtered ---
+            st.subheader("🎚️ Filtres de métriques")
             col1, col2, col3, col4, col5, col6 = st.columns(6)
 
             # Créer un nouveau masque pour les sliders
             mask_sliders = pd.Series(True, index=data_filtered.index)
 
             with col1:
-                # Impressions
-                if "Impr." in data_filtered.columns:
-                    impr = pd.to_numeric(
-                        data_filtered["Impr."].astype(str).str.replace(",", ".", regex=False),
-                        errors="coerce"
-                    )
-
-                    if not impr.dropna().empty:
-                        min_v, max_v = int(impr.min()), int(impr.max())
-                        min_s, max_s = st.slider(
-                            "Impressions",
-                            min_value=min_v,
-                            max_value=max_v,
-                            value=(min_v, max_v),
-                            step=1
-                        )
-                        mask_sliders &= (impr >= min_s) & (impr <= max_s)
+                mask_sliders &= self._create_slider("Impr.", data_filtered, "Impressions", is_integer=True)
 
             with col2:
-                # Clicks
-                if "Clics" in data_filtered.columns:
-                    clicks = pd.to_numeric(
-                        data_filtered["Clics"].astype(str).str.replace(",", ".", regex=False),
-                        errors="coerce"
-                    )
-
-                    if not clicks.dropna().empty:
-                        min_v, max_v = int(clicks.min()), int(clicks.max())
-                        min_s, max_s = st.slider(
-                            "Clics",
-                            min_value=min_v,
-                            max_value=max_v,
-                            value=(min_v, max_v),
-                            step=1
-                        )
-                        mask_sliders &= (clicks >= min_s) & (clicks <= max_s)
+                mask_sliders &= self._create_slider("Clics", data_filtered, "Clics", is_integer=True)
 
             with col3:
-                # CTR
-                if "CTR" in data_filtered.columns:
-                    ctr = pd.to_numeric(
-                        data_filtered["CTR"]
-                        .astype(str)
-                        .str.replace("%", "", regex=False)
-                        .str.replace(",", ".", regex=False),
-                        errors="coerce"
-                    )
-
-                    if not ctr.dropna().empty:
-                        min_v, max_v = float(ctr.min()), float(ctr.max())
-                        min_s, max_s = st.slider(
-                            "CTR (%)",
-                            min_value=min_v,
-                            max_value=max_v,
-                            value=(min_v, max_v)
-                        )
-                        mask_sliders &= (ctr >= min_s) & (ctr <= max_s)
+                mask_sliders &= self._create_slider("CTR", data_filtered, "CTR (%)", is_percentage=True)
 
             with col4:
-                # CPC moyen
-                if "CPC moy." in data_filtered.columns:
-                    cpc = pd.to_numeric(
-                        data_filtered["CPC moy."]
-                        .astype(str)
-                        .str.replace(",", ".", regex=False),
-                        errors="coerce"
-                    )
-
-                    if not cpc.dropna().empty:
-                        min_v, max_v = float(cpc.min()), float(cpc.max())
-                        min_s, max_s = st.slider(
-                            "CPC moyen",
-                            min_value=min_v,
-                            max_value=max_v,
-                            value=(min_v, max_v)
-                        )
-                        mask_sliders &= (cpc >= min_s) & (cpc <= max_s)
+                mask_sliders &= self._create_slider("CPC moy.", data_filtered, "CPC moyen")
 
             with col5:
-                # Coût
-                if "Coût" in data_filtered.columns:
-                    if not data_filtered["Coût"].empty:
-                        min_v, max_v = float(data_filtered["Coût"].min()), float(data_filtered["Coût"].max())
-                        min_s, max_s = st.slider(
-                            "Coût",
-                            min_value=min_v,
-                            max_value=max_v,
-                            value=(min_v, max_v)
-                        )
-                        mask_sliders &= (data_filtered["Coût"] >= min_s) & (data_filtered["Coût"] <= max_s)
+                mask_sliders &= self._create_slider("Coût", data_filtered, "Coût")
 
             with col6:
-                # Taux de conversion target
                 if "taux conv target" in data_filtered.columns:
-                    conv = pd.to_numeric(
-                        data_filtered["taux conv target"]
-                        .astype(str)
-                        .str.replace("%", "", regex=False)
-                        .str.replace(",", ".", regex=False),
-                        errors="coerce"
-                    )
-
-                    if not conv.dropna().empty:
-                        min_v, max_v = float(conv.min()), float(conv.max())
-                        min_s, max_s = st.slider(
-                            "Taux conv target (%)",
-                            min_value=min_v,
-                            max_value=max_v,
-                            value=(min_v, max_v)
-                        )
-                        mask_sliders &= (conv >= min_s) & (conv <= max_s)
+                    mask_sliders &= self._create_slider("taux conv target", data_filtered, "Taux conv target (%)", is_percentage=True)
                 else:
-                    st.info("Choose the target conv col")
+                    st.info("Choisir la colonne conv target")
             
             # Appliquer le masque des sliders
             data_selected = data_filtered.loc[mask_sliders].copy()
-            
-            # Sauvegarder dans session_state
-            st.session_state["data_selected"] = data_selected
-            
-            # Afficher
-            st.subheader(f"📊 Données filtrées ({len(data_selected)} lignes)")
-            st.data_editor(data_selected, key="main_data_editor")
+
+            if data_selected.empty:
+                st.warning("⚠️ Aucune donnée ne correspond aux filtres sélectionnés. Ajustez vos critères.")
+            else:
+                # Sauvegarder dans session_state
+                st.session_state["data_selected"] = data_selected
+
+                # Afficher les métriques clés
+                st.subheader(f"📊 Résumé des performances ({len(data_selected)} lignes)")
+                metric_cols = st.columns(5)
+
+                with metric_cols[0]:
+                    total_impr = data_selected["Impr."].sum() if "Impr." in data_selected.columns else 0
+                    st.metric("Impressions totales", f"{total_impr:,.0f}")
+
+                with metric_cols[1]:
+                    total_clics = data_selected["Clics"].sum() if "Clics" in data_selected.columns else 0
+                    st.metric("Clics totaux", f"{total_clics:,.0f}")
+
+                with metric_cols[2]:
+                    avg_ctr = data_selected["CTR"].mean() if "CTR" in data_selected.columns else 0
+                    st.metric("CTR moyen", f"{avg_ctr:.2f}%")
+
+                with metric_cols[3]:
+                    total_cost = data_selected["Coût"].sum() if "Coût" in data_selected.columns else 0
+                    st.metric("Coût total", f"{total_cost:,.2f} CHF")
+
+                with metric_cols[4]:
+                    if "taux conv target" in data_selected.columns:
+                        avg_conv = data_selected["taux conv target"].mean()
+                        st.metric("Taux conv. moyen", f"{avg_conv:.2f}%")
+                    else:
+                        st.metric("Conversions", "N/A")
+
+                st.divider()
+
+                # Afficher les données
+                col_title, col_export = st.columns([4, 1])
+                with col_title:
+                    st.subheader("📋 Données détaillées")
+                with col_export:
+                    csv = data_selected.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 Exporter CSV",
+                        data=csv,
+                        file_name=f"export_filtered_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        help="Télécharger les données filtrées au format CSV"
+                    )
+
+                st.data_editor(data_selected, key="main_data_editor", height=400)
 
         else:
-            #st.data_editor(data)
-            st.warning("You need to choose a excel file")
+            st.info("📁 Veuillez sélectionner un fichier Excel dans la barre latérale pour commencer")
 
     def general_graph(self):
         """Affiche un graphique combiné scatter + bar"""
-        
+
         # Vérifier que les données existent
         if "data_selected" not in st.session_state:
-            st.warning("⚠️ Aucune donnée sélectionnée. Retournez à la page principale.")
+            st.info("ℹ️ Veuillez d'abord sélectionner des données dans la section principale.")
             return
-        
+
         data_selected = st.session_state["data_selected"]
-        
+
         if data_selected.empty:
             st.warning("⚠️ Aucune donnée à afficher")
+            return
+
+        # Vérifier que les colonnes nécessaires existent
+        required_cols = ["Impr.", "Clics", "Coût"]
+        missing_cols = [col for col in required_cols if col not in data_selected.columns]
+
+        if missing_cols:
+            st.error(f"❌ Colonnes manquantes: {', '.join(missing_cols)}")
             return
         
         # Choisir la métrique pour la taille des points
@@ -458,16 +561,24 @@ class StreamlitGADS():
 
     def cluster(self):
         with st.sidebar:
-            st.header("Parameter Model")
+            st.header("Paramètres du Clustering")
             list_model = [
                 "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
                 "sentence-transformers/distiluse-base-multilingual-cased-v2",
                 "sentence-transformers/all-MiniLM-L6-v2"
             ]
-            
-            model_name = st.selectbox("Choose the model", list_model, key="sbert_model_name")
-            auth_n_cluster = st.checkbox("Active KMeans n_cluster automatisation")
-            active_cluster = st.button("Active clustering")
+
+            model_name = st.selectbox(
+                "Choisir le modèle d'embedding",
+                list_model,
+                key="sbert_model_name",
+                help="Modèle pour vectoriser les termes de recherche"
+            )
+            auth_n_cluster = st.checkbox(
+                "Détection automatique du nombre de clusters",
+                help="Utilise le score silhouette pour trouver le nombre optimal de clusters (2-20)"
+            )
+            active_cluster = st.button("🚀 Lancer le clustering", type="primary")
         
         data_cluster = st.session_state.get("data_selected")
         
@@ -480,55 +591,78 @@ class StreamlitGADS():
         texts = None
 
         if standart_cluster_col in data_cluster.columns:
-            st.success(f"The cluster col is found: {standart_cluster_col}")
+            st.success(f"✅ Colonne de clustering trouvée: {standart_cluster_col}")
             texts = (
                 data_cluster[standart_cluster_col]
                 .fillna("")
                 .str.strip()
             )
         else:
-            col_cluster = st.text_input("Name of the cluster column")
+            st.info(f"ℹ️ Colonne standard '{standart_cluster_col}' non trouvée")
+            col_cluster = st.text_input(
+                "Nom de la colonne à utiliser pour le clustering",
+                placeholder="Ex: Search term, Keyword, etc."
+            )
             if col_cluster:
-                texts = (
-                    data_cluster[col_cluster]
-                    .fillna("")
-                    .str.strip()
-                )
+                if col_cluster in data_cluster.columns:
+                    texts = (
+                        data_cluster[col_cluster]
+                        .fillna("")
+                        .str.strip()
+                    )
+                    st.success(f"✅ Colonne '{col_cluster}' sélectionnée")
+                else:
+                    st.error(f"❌ Colonne '{col_cluster}' introuvable dans les données")
             else:
-                st.warning("Choose the cluster column")
+                st.warning("⚠️ Veuillez spécifier une colonne pour le clustering")
 
         if active_cluster and texts is not None:
             with st.spinner("Clustering en cours..."):
                 emb = self._embed_texts(texts=tuple(texts), model_name=model_name)
+                n_samples = emb.shape[0]
+                if n_samples < 2:
+                    st.warning("Pas assez de lignes pour lancer le clustering (minimum 2).")
+                    return
+
                 k_vals = 5
                 best_k = None
                 best_s = None
 
                 if auth_n_cluster:
-                    best_k, best_s = None, -1
-                    for k in range(2, 20):
-                        labels = KMeans(n_clusters=k, random_state=42).fit_predict(emb)
-                        s = silhouette_score(emb, labels=labels, metric="cosine")
-                    
-                        if s > best_s:
-                            best_s, best_k = s, k
+                    if n_samples < 3:
+                        st.warning("Pas assez de lignes pour la detection automatique. Passez en manuel.")
+                        best_k = min(2, n_samples)
+                        labels = KMeans(n_clusters=best_k, random_state=42).fit_predict(emb)
+                    else:
+                        best_k, best_s = None, -1
+                        max_k = min(20, n_samples - 1)
+                        for k in range(2, max_k + 1):
+                            labels = KMeans(n_clusters=k, random_state=42).fit_predict(emb)
+                            s = silhouette_score(emb, labels=labels, metric="cosine")
+                        
+                            if s > best_s:
+                                best_s, best_k = s, k
 
-                    st.caption(f"the best k ist {best_k}\nThe score ist {best_s}")
-                    labels = KMeans(n_clusters=best_k, random_state=42).fit_predict(emb)
+                        st.caption(f"Le meilleur k est {best_k}\nLe score silhouette est {best_s:.3f}")
+                        labels = KMeans(n_clusters=best_k, random_state=42).fit_predict(emb)
 
                 else:
-                    # ✅ Correction: définir best_k et best_s aussi pour le cas non-automatique
-                    best_k = k_vals
-                    labels = KMeans(n_clusters=k_vals, random_state=42).fit_predict(emb)
-                    best_s = silhouette_score(emb, labels=labels, metric="cosine")
-                
+                    # ? Correction: d‚finir best_k et best_s aussi pour le cas non-automatique
+                    best_k = min(k_vals, n_samples)
+                    labels = KMeans(n_clusters=best_k, random_state=42).fit_predict(emb)
+                    if n_samples > best_k:
+                        best_s = silhouette_score(emb, labels=labels, metric="cosine")
+
                 data_cluster["cluster"] = labels
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Best K", best_k)
+                    st.metric("Nombre de clusters", best_k)
                 with col2:
-                    st.metric("The silhouette", f"{best_s:.3f}")
+                    if best_s is None:
+                        st.metric("Score Silhouette", "N/A")
+                    else:
+                        st.metric("Score Silhouette", f"{best_s:.3f}")
 
                 st.data_editor(data_cluster)
                 st.session_state["df_cluster"] = data_cluster
@@ -578,11 +712,15 @@ class StreamlitGADS():
 
     def perf_barplot(self):
         if "scaled" not in st.session_state or "df_cluster" not in st.session_state:
-            st.warning("⚠️ Lance d'abord le clustering + le cluster_barplot.")
+            st.info("ℹ️ Lancez d'abord le clustering et le cluster_barplot pour voir les performances.")
             return
 
         df_cluster = st.session_state["scaled"].copy()      # agrégé par cluster + scaled
         data_cluster = st.session_state["df_cluster"].copy()  # lignes originales + cluster
+
+        if df_cluster.empty or data_cluster.empty:
+            st.warning("⚠️ Données de clustering vides")
+            return
 
         # --- Scores (tout est déjà normalisé 0-1) ---
         df_cluster["perf_opportunite_visibilite"] = (
