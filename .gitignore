@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data artifacts
+/data/
+**/*.xlsx
+**/*.csv
+**/*.json
+
+# Secrets
+connection_token/service-account.json
+.env
+.env_open_ai
